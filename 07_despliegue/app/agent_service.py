@@ -28,7 +28,7 @@ for _env_path in _CANDIDATOS:
 # CONSTANTES
 # =========================
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://caso-riesgos-api.onrender.com")
 
 
 # =========================

@@ -509,6 +509,16 @@ if ejecutar:
 result = st.session_state["scoring_result"]
 
 if result:
+    # Sincronizar last_case_input con los valores actuales del sidebar
+    # para que el chat siempre sea consistente con lo que se muestra en pantalla
+    st.session_state["last_case_input"] = {
+        "id_cliente": id_cliente,
+        "principal": principal,
+        "tipo_interes": tipo_interes,
+        "num_cuotas": num_cuotas,
+        "finalidad": finalidad,
+        "vivienda": vivienda,
+    }
     if es_riesgo_alto(result, principal):
         visualizacion_resultados_con_chat(result, principal)
     else:

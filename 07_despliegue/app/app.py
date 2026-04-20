@@ -3,12 +3,13 @@ import requests
 import streamlit as st
 import pandas as pd
 from streamlit_echarts import st_echarts
+from agent_service import solicitar_explicacion_riesgo
 
 
 # =========================
 # CONFIGURACIÓN TÉCNICA
 # =========================
-API_BASE_URL = "https://caso-riesgos-api.onrender.com"
+API_BASE_URL = "http://127.0.0.1:8000"
 SCORE_ENDPOINT = "/predict"
 WARMUP_ENDPOINT = "/docs"
 DEFAULT_TIMEOUT = 30
@@ -188,66 +189,66 @@ with st.sidebar:
 # =========================
 # PANEL PRINCIPAL
 # =========================
-RISK_COLORS = {"ALTO": "#DC2626", "MEDIO": "#3B82F6", "BAJO": "#16A34A"}
+RISK_COLORS = {"alto": "#DC2626", "medio": "#3B82F6", "bajo": "#16A34A"}
 RISK_TXT = {
-    "ALTO": "No aprobar",
-    "MEDIO": "Revisar manualmente",
-    "BAJO": "Se recomienda aprobar",
+    "alto": "No aprobar",
+    "medio": "Revisar manualmente",
+    "bajo": "Se recomienda aprobar",
 }
 GAUGE_COLORS = [[0.3, "#16A34A"], [0.7, "#3B82F6"], [1.0, "#DC2626"]]
 
-st.markdown(
-    f"<h1 style='text-align:center;'>{PAGE_TITLE}</h1>",
-    unsafe_allow_html=True,
-)
 
-if "scoring_result" not in st.session_state:
-    st.session_state["scoring_result"] = None
+def clasificar_riesgo_por_pe(pe_euros: float) -> str:
+    if pe_euros < 1000:
+        return "bajo"
+    elif pe_euros < 5000:
+        return "medio"
+    return "alto"
 
-if ejecutar:
-    payload = [
-        {
-            "id_cliente": id_cliente,
-            "principal": principal,
-            "tipo_interes": tipo_interes,
-            "num_cuotas": num_cuotas,
-            "finalidad": finalidad,
-            "vivienda": vivienda,
-        }
-    ]
-    with st.spinner("Calculando riesgo..."):
-        result = post_scoring(payload)
-    if result["ok"] and isinstance(result["data"], list) and len(result["data"]) > 0:
-        st.session_state["scoring_result"] = result["data"][0]
-    else:
-        st.session_state["scoring_result"] = None
-        st.error(f"Error en la inferencia: {result['error_message']}")
-        if DEBUG_MODE:
-            st.json(result)
 
-data = st.session_state["scoring_result"]
+def es_riesgo_alto(result: dict, principal: float) -> bool:
+    pe_euros = result.get("perdida_esperada", 0) * principal
+    return clasificar_riesgo_por_pe(pe_euros) == "alto"
 
-if data:
-    pe_euros = data["perdida_esperada"] * principal
-    riesgo_tipo = get_risk_band(pe_euros)
-    color = RISK_COLORS[riesgo_tipo]
-    txt = RISK_TXT[riesgo_tipo]
 
-    # 3.1 KPI: Pérdida Esperada
-    st.markdown(
-        f"""
-        <div style='background:{color};padding:2rem 1rem 1.2rem 1rem;border-radius:16px;margin-bottom:1.5rem;'>
-            <h1 style='color:white;margin:0;font-size:2.5rem;'>Pérdida esperada: {pe_euros:.2f} €</h1>
-            <h3 style='color:white;margin:0;font-weight:600;'>{txt}</h3>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def obtener_metricas_resultado(result: dict, principal: float) -> dict:
+    pd_val = result.get("score_pd", 0)
+    ead_ratio = result.get("score_ead", 0)
+    lgd = result.get("score_lgd", 0)
+    ead_euros = ead_ratio * principal
+    pe_euros = result.get("perdida_esperada", 0) * principal
+    pe_risk = clasificar_riesgo_por_pe(pe_euros)
+    return {
+        "pd": pd_val,
+        "ead_ratio": ead_ratio,
+        "lgd": lgd,
+        "ead_euros": ead_euros,
+        "pe_euros": pe_euros,
+        "pe_risk": pe_risk,
+        "pe_text": RISK_TXT[pe_risk],
+        "color": RISK_COLORS[pe_risk],
+        "principal": principal,
+    }
 
-    # 3.2 Barra de impacto
+
+def render_resumen_pe(metricas: dict):
+    pe_euros = metricas["pe_euros"]
+    color = metricas["color"]
+    txt = metricas["pe_text"]
+    principal = metricas["principal"]
     pct = min(100 * pe_euros / principal, 100) if principal else 0
     st.markdown(
-        "<p style='font-size:1.25rem;font-weight:700;margin-bottom:4px;'>Impacto de la pérdida sobre el préstamo</p>",
+        f"<div style='background:{color};padding:2rem 1rem 1.2rem 1rem;"
+        f"border-radius:16px;margin-bottom:1.5rem;'>"
+        f"<h1 style='color:white;margin:0;font-size:2.5rem;'>"
+        f"Pérdida esperada: {pe_euros:.2f} €</h1>"
+        f"<h3 style='color:white;margin:0;font-weight:600;'>{txt}</h3>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='font-size:1.25rem;font-weight:700;margin-bottom:4px;'>"
+        "Impacto de la pérdida sobre el préstamo</p>",
         unsafe_allow_html=True,
     )
     bar_opts = {
@@ -304,16 +305,14 @@ if data:
     }
     st_echarts(bar_opts, height="110px")
     st.caption("Umbral de alerta: 50% del principal")
-    st.markdown("---")
 
-    # 3.3 Gauges: PD arriba, EAD y LGD debajo
+
+def render_velocimetros(metricas: dict):
     st.markdown(
         "<p style='text-align:center;font-size:1.5rem;font-weight:700;'>Métricas de riesgo</p>",
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # Fila 1: PD centrado
     _, col_pd, _ = st.columns([1, 2, 1])
     with col_pd:
         st_echarts(
@@ -334,15 +333,13 @@ if data:
                             "fontSize": 36,
                         },
                         "data": [
-                            {"value": round(data["score_pd"] * 100, 2), "name": "PD"}
+                            {"value": round(metricas["pd"] * 100, 2), "name": "PD"}
                         ],
                     }
                 ]
             },
             height="400px",
         )
-
-    # Fila 2: EAD y LGD
     col_ead, col_lgd = st.columns(2)
     with col_ead:
         st_echarts(
@@ -363,7 +360,10 @@ if data:
                             "fontSize": 22,
                         },
                         "data": [
-                            {"value": round(data["score_ead"] * 100, 2), "name": "EAD"}
+                            {
+                                "value": round(metricas["ead_ratio"] * 100, 2),
+                                "name": "EAD",
+                            }
                         ],
                     }
                 ]
@@ -372,10 +372,9 @@ if data:
         )
         st.markdown(
             f"<div style='text-align:center;font-size:1.1rem;'>"
-            f"EAD: {data['score_ead']*100:.2f}%<br>({data['score_ead']*principal:.2f} €)</div>",
+            f"EAD: {metricas['ead_ratio']*100:.2f}%<br>({metricas['ead_euros']:.2f} €)</div>",
             unsafe_allow_html=True,
         )
-
     with col_lgd:
         st_echarts(
             {
@@ -395,7 +394,7 @@ if data:
                             "fontSize": 22,
                         },
                         "data": [
-                            {"value": round(data["score_lgd"] * 100, 2), "name": "LGD"}
+                            {"value": round(metricas["lgd"] * 100, 2), "name": "LGD"}
                         ],
                     }
                 ]
@@ -403,9 +402,116 @@ if data:
             height="300px",
         )
         st.markdown(
-            f"<div style='text-align:center;font-size:1.1rem;'>LGD: {data['score_lgd']*100:.2f}%</div>",
+            f"<div style='text-align:center;font-size:1.1rem;'>LGD: {metricas['lgd']*100:.2f}%</div>",
             unsafe_allow_html=True,
         )
 
+
+def render_chat_riesgo_alto(result: dict, principal: float):
+    if not es_riesgo_alto(result, principal):
+        return
+    caso = st.session_state.get("last_case_input", {})
+    with st.container(border=True):
+        st.markdown("**Asistente de riesgo**")
+        for msg in st.session_state["chat_messages"]:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    st.markdown(msg["content"], unsafe_allow_html=True)
+                else:
+                    st.markdown(msg["content"])
+        pregunta = st.chat_input("Pregunta sobre este caso...")
+        if pregunta:
+            with st.chat_message("user"):
+                st.markdown(pregunta)
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state["chat_messages"]
+            ]
+            st.session_state["chat_messages"].append(
+                {"role": "user", "content": pregunta}
+            )
+            with st.chat_message("assistant"):
+                with st.spinner("Analizando..."):
+                    resp = solicitar_explicacion_riesgo(
+                        pregunta,
+                        caso,
+                        result,
+                        history=history,
+                    )
+                message = resp.get("message", "")
+                st.markdown(message, unsafe_allow_html=True)
+            st.session_state["chat_messages"].append(
+                {"role": "assistant", "content": message}
+            )
+            st.session_state["chat_response_id"] = resp.get("response_id")
+
+
+def visualizacion_resultados(result: dict, principal: float):
+    metricas = obtener_metricas_resultado(result, principal)
+    render_resumen_pe(metricas)
+    render_velocimetros(metricas)
+
+
+def visualizacion_resultados_con_chat(result: dict, principal: float):
+    metricas = obtener_metricas_resultado(result, principal)
+    render_resumen_pe(metricas)
+    col_viz, col_chat = st.columns([3, 1], gap="large")
+    with col_viz:
+        render_velocimetros(metricas)
+    with col_chat:
+        render_chat_riesgo_alto(result, principal)
+
+
+# =========================
+# TÍTULO
+# =========================
+st.markdown(
+    f"<h1 style='text-align:center;'>{PAGE_TITLE}</h1>",
+    unsafe_allow_html=True,
+)
+
+# =========================
+# SESSION STATE
+# =========================
+if "scoring_result" not in st.session_state:
+    st.session_state["scoring_result"] = None
+if "last_case_input" not in st.session_state:
+    st.session_state["last_case_input"] = {}
+if "chat_messages" not in st.session_state:
+    st.session_state["chat_messages"] = []
+if "chat_response_id" not in st.session_state:
+    st.session_state["chat_response_id"] = None
+
+if ejecutar:
+    payload = [
+        {
+            "id_cliente": id_cliente,
+            "principal": principal,
+            "tipo_interes": tipo_interes,
+            "num_cuotas": num_cuotas,
+            "finalidad": finalidad,
+            "vivienda": vivienda,
+        }
+    ]
+    st.session_state["last_case_input"] = payload[0]
+    st.session_state["chat_messages"] = []
+    st.session_state["chat_response_id"] = None
+    with st.spinner("Calculando riesgo..."):
+        result = post_scoring(payload)
+    if result["ok"] and isinstance(result["data"], list) and len(result["data"]) > 0:
+        st.session_state["scoring_result"] = result["data"][0]
+    else:
+        st.session_state["scoring_result"] = None
+        st.error(f"Error en la inferencia: {result['error_message']}")
+        if DEBUG_MODE:
+            st.json(result)
+
+result = st.session_state["scoring_result"]
+
+if result:
+    if es_riesgo_alto(result, principal):
+        visualizacion_resultados_con_chat(result, principal)
+    else:
+        visualizacion_resultados(result, principal)
 else:
     st.info("Introduce los datos y pulsa 'Calcular riesgo'.")

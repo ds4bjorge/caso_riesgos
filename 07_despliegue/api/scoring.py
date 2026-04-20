@@ -6,6 +6,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ARTEFACTO_PATH = BASE_DIR / "artefacto_pipeline.pkl"
+DATA_PATH = Path(__file__).resolve().parent / "data" / "demo_03_riesgos.csv"
 
 with open(ARTEFACTO_PATH, "rb") as f:
     artefacto = cloudpickle.load(f)
@@ -118,3 +119,52 @@ def scoring_df(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
     return df_resultado
+
+
+def calcular_scoring(datos: dict) -> dict:
+    """Calcula scoring para un único registro dado como dict.
+    Reutiliza scoring_df y la lógica de preprocesado ya existente.
+    """
+    principal = float(datos["principal"])
+    num_cuotas = int(datos["num_cuotas"])
+    tipo_interes = float(datos["tipo_interes"])
+
+    # Cuota francesa
+    if tipo_interes == 0:
+        imp_cuota = principal / num_cuotas
+    else:
+        i = tipo_interes / 12 / 100
+        imp_cuota = (
+            principal * (i * (1 + i) ** num_cuotas) / ((1 + i) ** num_cuotas - 1)
+        )
+
+    df_entrada = pd.DataFrame([{**datos, "imp_cuota": imp_cuota}])
+    df_hist = pd.read_csv(DATA_PATH)
+    df_merged = df_entrada.merge(
+        df_hist, on="id_cliente", how="left", suffixes=("", "_hist")
+    )
+
+    # Rellenar nulos numéricos
+    num_cols = df_merged.select_dtypes(include="number").columns.tolist()
+    df_merged[num_cols] = df_merged[num_cols].fillna(0)
+
+    for col in [
+        "ingresos_verificados",
+        "vivienda",
+        "finalidad",
+        "rating",
+        "antigüedad_empleo",
+    ]:
+        if col in df_merged.columns:
+            df_merged[col] = df_merged[col].fillna("desconocido").astype(str)
+
+    # Formatear num_cuotas como espera el pipeline
+    df_merged["num_cuotas"] = df_merged["num_cuotas"].apply(
+        lambda x: (
+            f" {int(x)} months" if not str(x).strip().endswith("months") else str(x)
+        )
+    )
+    df_merged = df_merged.infer_objects(copy=False)
+
+    df_resultado = scoring_df(df_merged)
+    return df_resultado.iloc[0].to_dict()

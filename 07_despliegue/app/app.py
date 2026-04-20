@@ -9,7 +9,7 @@ from agent_service import solicitar_explicacion_riesgo
 # =========================
 # CONFIGURACIÓN TÉCNICA
 # =========================
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = "https://caso-riesgos-api.onrender.com"
 SCORE_ENDPOINT = "/predict"
 WARMUP_ENDPOINT = "/docs"
 DEFAULT_TIMEOUT = 30
